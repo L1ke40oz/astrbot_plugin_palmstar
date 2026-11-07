@@ -40,5 +40,13 @@
         "description": "压力值附加描述",
         "hint": "请求带 pressure(0-100) 时追加到事件描述后，{pressure} 会被替换为数值。留空则不追加。",
         "default": "（力度约 {pressure}/100）"
+    },
+    "bypass_plugins": {
+        "type": "list",
+        "description": "触摸消息跳过的插件",
+        "hint": "填插件名（metadata 里的 name）。注入的触摸消息不会经过这些插件，例如消息防抖插件，这样触摸后立刻回复。你自己发的消息不受影响。",
+        "default": [
+            "astrbot_plugin_continuous_message"
+        ]
     }
 }

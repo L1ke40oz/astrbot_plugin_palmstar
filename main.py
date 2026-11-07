@@ -4,9 +4,11 @@ import time
 from aiohttp import web
 
 from astrbot.api import AstrBotConfig, logger
+from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import Plain
 from astrbot.api.platform import AstrBotMessage, MessageMember, MessageType
 from astrbot.api.star import Context, Star
+from astrbot.core.star import star_map
 
 DEFAULT_PART_DESCRIPTIONS = """head=（她轻轻摸了摸你的头）
 hand=（她牵起了你的手）
@@ -31,6 +33,9 @@ class PalmStarPlugin(Star):
         self.platform_id = str(config.get("platform_id", "")).strip()
         self.cooldown = float(config.get("cooldown_seconds", 10))
         self.pressure_template = str(config.get("pressure_template", ""))
+        self.bypass_plugins = {
+            str(name).strip() for name in config.get("bypass_plugins", []) if name
+        }
 
         # "head=（她轻轻摸了摸你的头）" per line -> {"head": "（她轻轻摸了摸你的头）"}
         self.part_descriptions: dict[str, str] = {}
@@ -71,6 +76,29 @@ class PalmStarPlugin(Star):
             await self._runner.cleanup()
             self._runner = None
             logger.info("[palmstar] HTTP server stopped")
+
+    @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE, priority=10000)
+    async def skip_plugins_for_touch(self, event: AstrMessageEvent):
+        """Keep injected touch events away from plugins listed in bypass_plugins.
+
+        AstrBot runs message handlers from the ``activated_handlers`` list in
+        priority order. This handler runs first (very high priority) and removes
+        the listed plugins' handlers from that list, so e.g. a debounce plugin
+        never holds a touch event back. Real user messages are untouched.
+
+        Args:
+            event: Incoming private message event.
+        """
+        if event.get_extra("palmstar_touch") is None or not self.bypass_plugins:
+            return
+        handlers = event.get_extra("activated_handlers") or []
+        # Mutate in place: the pipeline is iterating this very list, and every
+        # removed handler sits after this one because of the priority above.
+        for handler in list(handlers):
+            md = star_map.get(handler.handler_module_path)
+            if md and md.name in self.bypass_plugins:
+                handlers.remove(handler)
+                logger.debug(f"[palmstar] Skipped {md.name} for touch event")
 
     async def handle_touch(self, request: web.Request) -> web.Response:
         """Handle a touch report from the ESP32.
