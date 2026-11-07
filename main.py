@@ -98,7 +98,7 @@ class PalmStarPlugin(Star):
             md = star_map.get(handler.handler_module_path)
             if md and md.name in self.bypass_plugins:
                 handlers.remove(handler)
-                logger.debug(f"[palmstar] Skipped {md.name} for touch event")
+                logger.info(f"[palmstar] Skipped {md.name} for touch event")
 
     async def handle_touch(self, request: web.Request) -> web.Response:
         """Handle a touch report from the ESP32.

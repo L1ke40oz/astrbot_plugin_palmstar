@@ -1,7 +1,7 @@
 name: astrbot_plugin_palmstar
 display_name: 掌心星 PalmStar
 desc: 让 BJD 娃娃成为 bot 的身体：ESP32 上报触摸事件，插件把它注入 QQ 私聊，由 bot 按人设回应。
-version: v0.1.0
+version: v0.2.0
 author: L1ke40oz
 repo: https://github.com/L1ke40oz/astrbot_plugin_palmstar
 astrbot_version: ">=4.16,<5"
