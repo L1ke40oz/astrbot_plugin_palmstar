@@ -1,14 +1,38 @@
-# astrbot-plugin-helloworld
+# 掌心星 PalmStar
 
-AstrBot 插件模板 / A template plugin for AstrBot plugin feature
+让 BJD 娃娃成为 AstrBot 的“身体”：娃娃里的 ESP32 被触摸时上报事件，插件把它写成一句事件描述（如“（她轻轻摸了摸你的头）”），伪装成你发来的 QQ 私聊消息注入 AstrBot，bot 按人设、记忆和上下文正常回复到 QQ。
 
-> [!NOTE]
-> This repo is just a template of [AstrBot](https://github.com/AstrBotDevs/AstrBot) Plugin.
-> 
-> [AstrBot](https://github.com/AstrBotDevs/AstrBot) is an agentic assistant for both personal and group conversations. It can be deployed across dozens of mainstream instant messaging platforms, including QQ, Telegram, Feishu, DingTalk, Slack, LINE, Discord, Matrix, etc. In addition, it provides a reliable and extensible conversational AI infrastructure for individuals, developers, and teams. Whether you need a personal AI companion, an intelligent customer support agent, an automation assistant, or an enterprise knowledge base, AstrBot enables you to quickly build AI applications directly within your existing messaging workflows.
+## 接口
 
-# Supports
+```
+GET http://服务器IP:8765/touch?part=head&token=你的token[&pressure=0-100]
+```
 
-- [AstrBot Repo](https://github.com/AstrBotDevs/AstrBot)
-- [AstrBot Plugin Development Docs (Chinese)](https://docs.astrbot.app/dev/star/plugin-new.html)
-- [AstrBot Plugin Development Docs (English)](https://docs.astrbot.app/en/dev/star/plugin-new.html)
+| 状态码 | 含义 |
+| --- | --- |
+| 200 | 已注入，返回 `{"ok": true, "text": "注入的描述"}` |
+| 400 | 部位未配置，或 pressure 不是 0-100 的整数 |
+| 403 | token 不对 |
+| 429 | 该部位在冷却中，返回 `retry_after` 秒数 |
+| 503 | 未配置 `target_qq`，或找不到 aiocqhttp 适配器 |
+
+## 配置
+
+在 WebUI 的插件配置里填写：
+
+- **HTTP 监听端口**：默认 8765。Windows 防火墙需要放行该端口。
+- **校验 token**：ESP32 请求里带上相同的值。
+- **你的 QQ 号**：必填。
+- **部位 → 事件描述**：每行 `部位=描述`，新增部位只需加一行。
+- **同部位冷却时间**、**压力值附加描述**：见配置说明。
+
+## 注意
+
+- 仅支持 aiocqhttp(OneBot v11) 适配器的私聊。
+- 请关闭 AstrBot 的“回复时引用消息”（`reply_with_quote`）。注入的消息在 QQ 里并不存在，引用它会导致发送失败。
+
+## 测试
+
+```bash
+curl "http://127.0.0.1:8765/touch?part=head&token=你的token"
+```

@@ -1,0 +1,44 @@
+{
+    "port": {
+        "type": "int",
+        "description": "HTTP 监听端口",
+        "hint": "ESP32 请求 http://服务器IP:端口/touch。修改后插件重载即生效，记得在防火墙放行。",
+        "default": 8765
+    },
+    "token": {
+        "type": "string",
+        "description": "校验 token",
+        "hint": "ESP32 请求需带 &token=这里的值。留空则不校验（不建议）。",
+        "default": ""
+    },
+    "target_qq": {
+        "type": "string",
+        "description": "你的 QQ 号",
+        "hint": "触摸事件会伪装成这个 QQ 发来的私聊消息，bot 的回复也发到这里。",
+        "default": ""
+    },
+    "platform_id": {
+        "type": "string",
+        "description": "平台适配器 ID",
+        "hint": "留空自动使用第一个 aiocqhttp(OneBot) 适配器。有多个 QQ 适配器时填写对应 ID。",
+        "default": ""
+    },
+    "cooldown_seconds": {
+        "type": "float",
+        "description": "同部位冷却时间（秒）",
+        "hint": "同一部位在冷却期内再次触摸会被忽略（返回 429），不同部位互不影响。",
+        "default": 10
+    },
+    "part_descriptions": {
+        "type": "text",
+        "description": "部位 → 事件描述",
+        "hint": "每行一条：部位=描述。部位即 ESP32 发送的 part 参数（不区分大小写）。未列出的部位会被拒绝（返回 400）。",
+        "default": "head=（她轻轻摸了摸你的头）\nhand=（她牵起了你的手）\nface=（她用指尖碰了碰你的脸）"
+    },
+    "pressure_template": {
+        "type": "string",
+        "description": "压力值附加描述",
+        "hint": "请求带 pressure(0-100) 时追加到事件描述后，{pressure} 会被替换为数值。留空则不追加。",
+        "default": "（力度约 {pressure}/100）"
+    }
+}
