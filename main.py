@@ -27,6 +27,8 @@ MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # ~5 minutes of 16 kHz 16-bit mono PCM
 SPEECH_RATE = 16000  # Sample rate of the PCM sent to the ESP32 speaker
 # Stage directions like （笑） or *pats your head* should not be read aloud.
 BRACKET_PATTERN = re.compile(r"（[^）]*）|\([^)]*\)|\*[^*]*\*")
+# One sentence: text up to and including its end punctuation.
+SENTENCE_PATTERN = re.compile(r"[^。！？!?…~～\n]+[。！？!?…~～]*")
 
 
 class PalmStarPlugin(Star):
@@ -72,11 +74,12 @@ class PalmStarPlugin(Star):
         self._self_id = ""
         self._nickname = ""
         self._runner: web.AppRunner | None = None
-        # Injected event id -> future resolved with the reply as 16 kHz PCM
-        # (b"" when there is nothing to play). Filled by speak_reply, consumed
-        # by handle_speech.
+        # Injected event id -> spoken reply state. speak_reply appends one
+        # 16 kHz PCM chunk per sentence to "chunks", sets "done" when finished
+        # and pulses "changed"; handle_speech serves the chunks in order.
         self._event_seq = 0
-        self._speech: dict[int, asyncio.Future] = {}
+        self._speech: dict[int, dict] = {}
+        self._tasks: set[asyncio.Task] = set()
 
     async def initialize(self):
         app = web.Application(client_max_size=MAX_UPLOAD_BYTES)
@@ -100,6 +103,8 @@ class PalmStarPlugin(Star):
             logger.warning("[palmstar] token is empty, requests are not checked")
 
     async def terminate(self):
+        for task in self._tasks:
+            task.cancel()
         if self._runner:
             await self._runner.cleanup()
             self._runner = None
@@ -290,21 +295,25 @@ class PalmStarPlugin(Star):
         logger.info(f"[palmstar] Injected voice ({seconds:.1f}s): {text}")
         return web.json_response({"ok": True, "text": text, "id": marker["id"]})
 
-    @filter.after_message_sent()
+    @filter.on_decorating_result(priority=-100)
     async def speak_reply(self, event: AstrMessageEvent):
-        """Turn the bot's reply to a doll event into speech for the ESP32.
+        """Start turning the bot's reply to a doll event into speech.
 
-        Runs after the reply was sent to QQ, takes its text, synthesizes it with
-        an AstrBot TTS provider and converts it to 16 kHz mono PCM with ffmpeg.
-        The result resolves the future /speech is waiting on.
+        Runs as soon as the reply text is ready, before it is sent to QQ (low
+        priority so other plugins finish editing the text first). Synthesis
+        runs in the background so QQ sending is not delayed: each sentence is
+        synthesized with an AstrBot TTS provider, converted to 16 kHz mono PCM
+        with ffmpeg and published for /speech, so playback starts after the
+        first sentence instead of the whole reply.
 
         Args:
-            event: The event whose reply was just sent.
+            event: The event whose reply is about to be sent.
         """
         marker = event.get_extra("palmstar")
-        future = self._speech.get(marker.get("id")) if marker else None
-        if future is None or future.done():
+        speech = self._speech.get(marker.get("id")) if marker else None
+        if speech is None or speech["started"]:
             return
+        speech["started"] = True
 
         result = event.get_result()
         text = "".join(
@@ -312,7 +321,7 @@ class PalmStarPlugin(Star):
         )
         if self.speech_strip_brackets:
             text = BRACKET_PATTERN.sub("", text)
-        text = text.strip()
+        sentences = [x.strip() for x in SENTENCE_PATTERN.findall(text) if x.strip()]
 
         # A configured provider id lets the doll speak without turning on
         # AstrBot's global TTS switch, so QQ replies stay text.
@@ -320,47 +329,69 @@ class PalmStarPlugin(Star):
             provider = self.context.get_provider_by_id(self.tts_provider_id)
         else:
             provider = self.context.get_using_tts_provider()
-        pcm = b""
-        if not text:
-            logger.info("[palmstar] Reply has no speakable text")
-        elif not isinstance(provider, TTSProvider):
-            logger.warning(
-                f"[palmstar] TTS provider not available (id={self.tts_provider_id!r})"
-            )
-        else:
+
+        async def synthesize():
             try:
-                audio_path = await provider.get_audio(text)
-                proc = await asyncio.create_subprocess_exec(
-                    "ffmpeg", "-v", "error", "-i", str(audio_path),
-                    "-ac", "1", "-ar", str(SPEECH_RATE), "-f", "s16le", "-",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )  # fmt: skip
-                pcm, err = await proc.communicate()
-                if proc.returncode != 0:
-                    raise RuntimeError(err.decode(errors="ignore").strip()[-300:])
-                logger.info(
-                    f"[palmstar] Speech ready ({len(pcm) / (SPEECH_RATE * 2):.1f}s): "
-                    f"{text}"
-                )
-            except Exception as e:
-                logger.error(f"[palmstar] Text-to-speech failed: {e}")
-                pcm = b""
-        if not future.done():
-            future.set_result(pcm)
+                if not sentences:
+                    logger.info("[palmstar] Reply has no speakable text")
+                    return
+                if not isinstance(provider, TTSProvider):
+                    logger.warning(
+                        "[palmstar] TTS provider not available "
+                        f"(id={self.tts_provider_id!r})"
+                    )
+                    return
+                for sentence in sentences:
+                    try:
+                        audio_path = await provider.get_audio(sentence)
+                        proc = await asyncio.create_subprocess_exec(
+                            "ffmpeg", "-v", "error", "-i", str(audio_path),
+                            "-ac", "1", "-ar", str(SPEECH_RATE), "-f", "s16le", "-",
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                        )  # fmt: skip
+                        pcm, err = await proc.communicate()
+                        if proc.returncode != 0:
+                            raise RuntimeError(
+                                err.decode(errors="ignore").strip()[-300:]
+                            )
+                    except Exception as e:
+                        logger.error(
+                            f"[palmstar] Text-to-speech failed for {sentence!r}: {e}"
+                        )
+                        continue
+                    if pcm:
+                        speech["chunks"].append(pcm)
+                        speech["changed"].set()
+                        logger.info(
+                            f"[palmstar] Speech {len(speech['chunks'])} ready "
+                            f"({len(pcm) / (SPEECH_RATE * 2):.1f}s): {sentence}"
+                        )
+            finally:
+                speech["done"] = True
+                speech["changed"].set()
+
+        task = asyncio.create_task(synthesize())
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
     async def handle_speech(self, request: web.Request) -> web.Response:
-        """Let the ESP32 wait for and download the spoken reply to an event.
+        """Let the ESP32 wait for and download the spoken reply, one sentence at a time.
+
+        The ESP32 asks for seq=0, 1, 2... and plays each chunk as it arrives,
+        stopping after a chunk marked ``X-Last: 1`` or a 204.
 
         Query args:
             id: Event id returned by /touch or /voice.
+            seq: Index of the sentence to fetch, default 0.
             token: Shared secret, must match the configured token if set.
-            wait: Seconds to wait for the reply, default 60, max 120.
+            wait: Seconds to wait for that sentence, default 60, max 120.
 
         Returns:
-            200 with raw 16 kHz 16-bit mono PCM, 204 if there is nothing to play
+            200 with raw 16 kHz 16-bit mono PCM and an ``X-Last`` header (1 if
+            this is the final sentence), 204 if there is nothing more to play
             (no reply, no TTS, timeout), 400 bad args, 403 bad token,
-            404 unknown or already fetched id.
+            404 unknown or already finished id.
         """
         q = request.query
         if self.token and not hmac.compare_digest(
@@ -369,26 +400,44 @@ class PalmStarPlugin(Star):
             return web.json_response({"ok": False, "error": "bad token"}, status=403)
         try:
             event_id = int(q["id"])
+            seq = int(q.get("seq", 0))
             wait = min(float(q.get("wait", 60)), 120)
         except (KeyError, ValueError):
             return web.json_response(
-                {"ok": False, "error": "id and wait must be numbers"}, status=400
+                {"ok": False, "error": "id, seq and wait must be numbers"}, status=400
             )
-        future = self._speech.get(event_id)
-        if future is None:
+        speech = self._speech.get(event_id)
+        if speech is None:
             return web.json_response({"ok": False, "error": "unknown id"}, status=404)
-        try:
-            pcm = await asyncio.wait_for(asyncio.shield(future), wait)
-        except asyncio.TimeoutError:
-            return web.Response(status=204)
-        self._speech.pop(event_id, None)
-        if not pcm:
-            return web.Response(status=204)
-        return web.Response(
-            body=pcm,
-            content_type="application/octet-stream",
-            headers={"X-Sample-Rate": str(SPEECH_RATE)},
-        )
+
+        deadline = asyncio.get_running_loop().time() + wait
+        while True:
+            chunks = speech["chunks"]
+            if seq < len(chunks):
+                last = speech["done"] and seq == len(chunks) - 1
+                if last:
+                    self._speech.pop(event_id, None)
+                return web.Response(
+                    body=chunks[seq],
+                    content_type="application/octet-stream",
+                    headers={
+                        "X-Sample-Rate": str(SPEECH_RATE),
+                        "X-Last": "1" if last else "0",
+                    },
+                )
+            if speech["done"]:
+                self._speech.pop(event_id, None)
+                return web.Response(status=204)
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return web.Response(status=204)
+            # No await between the checks above and clear(), so a chunk can't
+            # slip in unnoticed.
+            speech["changed"].clear()
+            try:
+                await asyncio.wait_for(speech["changed"].wait(), remaining)
+            except asyncio.TimeoutError:
+                return web.Response(status=204)
 
     async def _inject(self, text: str, marker: dict) -> str | None:
         """Inject text into the owner's QQ private chat as if the owner sent it.
@@ -446,7 +495,12 @@ class PalmStarPlugin(Star):
 
         self._event_seq += 1
         marker["id"] = self._event_seq
-        self._speech[marker["id"]] = asyncio.get_running_loop().create_future()
+        self._speech[marker["id"]] = {
+            "chunks": [],
+            "done": False,
+            "started": False,
+            "changed": asyncio.Event(),
+        }
         while len(self._speech) > 20:  # Drop replies the ESP32 never fetched
             self._speech.pop(next(iter(self._speech)))
 

@@ -28,10 +28,10 @@ Body: 16 位小端单声道 PCM 原始数据
 ### 语音回复
 
 ```
-GET http://服务器IP:8765/speech?id=事件ID&token=你的token[&wait=60]
+GET http://服务器IP:8765/speech?id=事件ID&seq=句子序号&token=你的token[&wait=60]
 ```
 
-`/touch` 和 `/voice` 成功时会返回事件 `id`。ESP32 拿这个 id 请求 `/speech`，插件会等沈星回回复后，用 AstrBot 的语音合成服务把回复转成语音，返回 16kHz 16 位单声道 PCM（200）。没有可播放的内容（没回复、没配语音合成、超时）返回 204。服务器需要安装 ffmpeg。
+`/touch` 和 `/voice` 成功时会返回事件 `id`。沈星回的回复一生成（发到 QQ 之前），插件就开始逐句合成语音。ESP32 依次请求 `seq=0、1、2…`，每次拿到一句 16kHz 16 位单声道 PCM（200），响应头 `X-Last: 1` 表示最后一句；没有更多内容（没回复、没配语音合成、超时）返回 204。服务器需要安装 ffmpeg。
 
 ## 配置
 
