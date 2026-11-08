@@ -27,7 +27,7 @@ back=（她轻轻拍了拍你的背）"""
 DEFAULT_VOICE_TEMPLATE = "（她握着你的手，对你说）{text}"
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # ~5 minutes of 16 kHz 16-bit mono PCM
-SPEECH_RATE = 16000  # Sample rate of the PCM sent to the ESP32 speaker
+SPEECH_RATE = 24000  # Sample rate of the PCM sent to the ESP32 speaker
 # Stage directions like （笑） or *pats your head* should not be read aloud.
 BRACKET_PATTERN = re.compile(r"（[^）]*）|\([^)]*\)|\*[^*]*\*")
 # One sentence: text up to and including its end punctuation. Used when
@@ -89,7 +89,7 @@ class PalmStarPlugin(Star):
         self._nickname = ""
         self._runner: web.AppRunner | None = None
         # Injected event id -> spoken reply state. speak_reply appends one
-        # 16 kHz PCM chunk per sentence to "chunks", sets "done" when finished
+        # 24 kHz PCM chunk per sentence to "chunks", sets "done" when finished
         # and pulses "changed"; handle_speech serves the chunks in order.
         self._event_seq = 0
         self._speech: dict[int, dict] = {}
@@ -367,7 +367,7 @@ class PalmStarPlugin(Star):
         runs in the background so QQ sending is not delayed. The reply is
         synthesized with an AstrBot TTS provider in one piece, or sentence by
         sentence when speech_by_sentence is on (playback then starts after the
-        first sentence), converted to 16 kHz mono PCM with ffmpeg and published
+        first sentence), converted to 24 kHz mono PCM with ffmpeg and published
         for /speech.
 
         Args:
@@ -502,7 +502,7 @@ class PalmStarPlugin(Star):
             wait: Seconds to wait for that sentence, default 60, max 120.
 
         Returns:
-            200 with raw 16 kHz 16-bit mono PCM and an ``X-Last`` header (1 if
+            200 with raw 24 kHz 16-bit mono PCM and an ``X-Last`` header (1 if
             this is the final sentence), 204 if there is nothing more to play
             (no reply, no TTS, timeout), 400 bad args, 403 bad token,
             404 unknown or already finished id.
