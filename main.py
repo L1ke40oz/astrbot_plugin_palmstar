@@ -4,6 +4,7 @@ import hmac
 import re
 import time
 import wave
+from datetime import datetime
 from pathlib import Path
 
 from aiohttp import web
@@ -12,7 +13,7 @@ from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import Plain
 from astrbot.api.platform import AstrBotMessage, MessageMember, MessageType
-from astrbot.api.provider import STTProvider
+from astrbot.api.provider import ProviderRequest, STTProvider
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.provider.provider import TTSProvider
 from astrbot.core.star import star_map
@@ -20,7 +21,9 @@ from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 
 DEFAULT_PART_DESCRIPTIONS = """head=（她轻轻摸了摸你的头）
 hand=（她牵起了你的手）
-face=（她用指尖碰了碰你的脸）"""
+face=（她用指尖碰了碰你的脸）
+belly=（她戳了戳你的肚子）
+back=（她轻轻拍了拍你的背）"""
 DEFAULT_VOICE_TEMPLATE = "（她握着你的手，对你说）{text}"
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # ~5 minutes of 16 kHz 16-bit mono PCM
@@ -39,11 +42,13 @@ class PalmStarPlugin(Star):
     """Turns a BJD doll with an ESP32 into the bot's body.
 
     The ESP32 reports touches (``GET /touch``) and recorded speech
-    (``POST /voice``). The plugin turns them into text and injects it into the
-    owner's QQ private session as if the owner had sent it, so AstrBot replies
-    through the normal pipeline (persona, memory, conversation context). The
-    reply is also synthesized to speech, which the ESP32 fetches from
-    ``GET /speech`` and plays.
+    (``POST /voice``). Speech, and touches when touch_realtime is on, are turned
+    into text and injected into the owner's QQ private session as if the owner
+    had sent it, so AstrBot replies through the normal pipeline (persona,
+    memory, conversation context). The reply is also synthesized to speech,
+    which the ESP32 fetches from ``GET /speech`` and plays. With touch_realtime
+    off, the ESP32 plays a local recording and the touch is remembered and
+    added to the next LLM request in the owner's chat instead.
     """
 
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -54,6 +59,7 @@ class PalmStarPlugin(Star):
         self.target_qq = str(config.get("target_qq", "")).strip()
         self.platform_id = str(config.get("platform_id", "")).strip()
         self.cooldown = float(config.get("cooldown_seconds", 10))
+        self.touch_realtime = bool(config.get("touch_realtime", False))
         self.pressure_template = str(config.get("pressure_template", ""))
         self.stt_provider_id = str(config.get("stt_provider_id", "")).strip()
         self.save_voice_debug = bool(config.get("save_voice_debug", False))
@@ -76,6 +82,9 @@ class PalmStarPlugin(Star):
                 self.part_descriptions[key.strip().lower()] = text.strip()
 
         self._last_touch: dict[str, float] = {}  # part -> monotonic timestamp
+        # Touches waiting for the next LLM request (touch_realtime off), as
+        # "[HH:MM] description" lines.
+        self._pending_touches: list[str] = []
         self._self_id = ""
         self._nickname = ""
         self._runner: web.AppRunner | None = None
@@ -141,14 +150,20 @@ class PalmStarPlugin(Star):
     async def handle_touch(self, request: web.Request) -> web.Response:
         """Handle a touch report from the ESP32.
 
+        With touch_realtime off the touch is remembered for the next LLM request
+        and the response says ``"mode": "local"`` so the ESP32 plays a local
+        recording. With it on the touch is injected right away and the response
+        says ``"mode": "realtime"`` with an event id for /speech.
+
         Query args:
             part: Touched body part, must be a key in part_descriptions.
             token: Shared secret, must match the configured token if set.
             pressure: Optional pressure value, integer 0-100.
 
         Returns:
-            JSON response. 200 injected, 400 bad args, 403 bad token,
-            429 cooling down, 503 platform or target not ready.
+            JSON response. 200 remembered or injected, 400 bad args,
+            403 bad token, 429 cooling down (realtime only),
+            503 platform or target not ready (realtime only).
         """
         q = request.query
         if self.token and not hmac.compare_digest(
@@ -174,27 +189,45 @@ class PalmStarPlugin(Star):
                     {"ok": False, "error": "pressure must be 0-100"}, status=400
                 )
 
-        now = time.monotonic()
-        remaining = self.cooldown - (now - self._last_touch.get(part, -1e9))
-        if remaining > 0:
-            return web.json_response(
-                {"ok": False, "error": "cooldown", "retry_after": round(remaining, 1)},
-                status=429,
-            )
-
         text = description
         if pressure is not None and self.pressure_template:
             text += self.pressure_template.format(pressure=pressure)
+        now = time.monotonic()
+        remaining = self.cooldown - (now - self._last_touch.get(part, -1e9))
 
+        if not self.touch_realtime:
+            # The ESP32 plays its recording on every touch; the cooldown only
+            # keeps repeated touches of one part out of the remembered list.
+            if remaining <= 0:
+                self._pending_touches.append(f"[{datetime.now():%H:%M}] {text}")
+                del self._pending_touches[:-20]
+                self._last_touch[part] = now
+                logger.info(f"[palmstar] Remembered touch part={part}: {text}")
+            return web.json_response({"ok": True, "mode": "local", "text": text})
+
+        if remaining > 0:
+            return web.json_response(
+                {
+                    "ok": False,
+                    "mode": "realtime",
+                    "error": "cooldown",
+                    "retry_after": round(remaining, 1),
+                },
+                status=429,
+            )
         marker = {"type": "touch", "part": part, "pressure": pressure}
         error = await self._inject(text, marker)
         if error:
-            return web.json_response({"ok": False, "error": error}, status=503)
+            return web.json_response(
+                {"ok": False, "mode": "realtime", "error": error}, status=503
+            )
         self._last_touch[part] = now
         logger.info(
             f"[palmstar] Injected touch part={part} pressure={pressure}: {text}"
         )
-        return web.json_response({"ok": True, "text": text, "id": marker["id"]})
+        return web.json_response(
+            {"ok": True, "mode": "realtime", "text": text, "id": marker["id"]}
+        )
 
     async def handle_voice(self, request: web.Request) -> web.Response:
         """Handle speech recorded by the ESP32 while the hand FSR is pressed.
@@ -299,6 +332,31 @@ class PalmStarPlugin(Star):
             return web.json_response({"ok": False, "error": error}, status=503)
         logger.info(f"[palmstar] Injected voice ({seconds:.1f}s): {text}")
         return web.json_response({"ok": True, "text": text, "id": marker["id"]})
+
+    @filter.on_llm_request()
+    async def attach_pending_touches(
+        self, event: AstrMessageEvent, req: ProviderRequest
+    ):
+        """Add remembered touches to the next LLM request in the owner's chat.
+
+        Covers the owner's next message, a voice message from the doll and
+        proactive messages that go through the pipeline as the owner. The
+        touches become part of the user turn, so they stay in the history.
+
+        Args:
+            event: Event that triggered the LLM request.
+            req: The request about to be sent to the model.
+        """
+        if (
+            not self._pending_touches
+            or not event.is_private_chat()
+            or event.get_sender_id() != self.target_qq
+        ):
+            return
+        touches = "\n".join(self._pending_touches)
+        self._pending_touches.clear()
+        req.prompt = f"（这段时间她通过娃娃碰了碰你）\n{touches}\n\n{req.prompt or ''}"
+        logger.info(f"[palmstar] Attached remembered touches:\n{touches}")
 
     @filter.on_decorating_result(priority=-100)
     async def speak_reply(self, event: AstrMessageEvent):

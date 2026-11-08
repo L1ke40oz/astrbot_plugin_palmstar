@@ -23,17 +23,23 @@
         "hint": "留空自动使用第一个 aiocqhttp(OneBot) 适配器。有多个 QQ 适配器时填写对应 ID。",
         "default": ""
     },
+    "touch_realtime": {
+        "type": "bool",
+        "description": "触摸实时对话",
+        "hint": "关闭（默认）：触摸时娃娃播放本地录音，触摸记录先存着，等你下一次发消息、按住手心说话或触发主动消息时一起带给 bot。开启：触摸后立即让 bot 回复并用语音说出来，娃娃不播放本地录音。",
+        "default": false
+    },
     "cooldown_seconds": {
         "type": "float",
         "description": "同部位冷却时间（秒）",
-        "hint": "同一部位在冷却期内再次触摸会被忽略（返回 429），不同部位互不影响。",
+        "hint": "同一部位在冷却期内再次触摸：实时对话模式下会被忽略（返回 429）；本地录音模式下照常播放录音，但不会重复记录。不同部位互不影响。",
         "default": 10
     },
     "part_descriptions": {
         "type": "text",
         "description": "部位 → 事件描述",
         "hint": "每行一条：部位=描述。部位即 ESP32 发送的 part 参数（不区分大小写）。未列出的部位会被拒绝（返回 400）。",
-        "default": "head=（她轻轻摸了摸你的头）\nhand=（她牵起了你的手）\nface=（她用指尖碰了碰你的脸）"
+        "default": "head=（她轻轻摸了摸你的头）\nhand=（她牵起了你的手）\nface=（她用指尖碰了碰你的脸）\nbelly=（她戳了戳你的肚子）\nback=（她轻轻拍了拍你的背）"
     },
     "pressure_template": {
         "type": "string",
