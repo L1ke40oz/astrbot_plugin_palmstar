@@ -2,7 +2,7 @@
     "port": {
         "type": "int",
         "description": "HTTP 监听端口",
-        "hint": "ESP32 请求 http://服务器IP:端口/touch。修改后插件重载即生效，记得在防火墙放行。",
+        "hint": "ESP32 请求 http://服务器IP:端口/touch。修改后插件重载即生效，需要放行端口。",
         "default": 8765
     },
     "token": {
@@ -41,10 +41,22 @@
         "hint": "请求带 pressure(0-100) 时追加到事件描述后，{pressure} 会被替换为数值。留空则不追加。",
         "default": "（力度约 {pressure}/100）"
     },
+    "stt_provider_id": {
+        "type": "string",
+        "description": "语音识别服务 ID",
+        "hint": "AstrBot「服务提供商」里语音转文字服务的 ID。填写后无需开启 AstrBot 全局语音识别；留空则使用全局设置的语音识别服务。",
+        "default": ""
+    },
+    "voice_template": {
+        "type": "string",
+        "description": "语音消息模板",
+        "hint": "按住手心说话识别出的文字会填进 {text}，再注入 QQ。",
+        "default": "（她握着你的手，对你说）{text}"
+    },
     "bypass_plugins": {
         "type": "list",
-        "description": "触摸消息跳过的插件",
-        "hint": "填插件名（metadata 里的 name）。注入的触摸消息不会经过这些插件，例如消息防抖插件，这样触摸后立刻回复。你自己发的消息不受影响。",
+        "description": "娃娃消息跳过的插件",
+        "hint": "填插件名（metadata 里的 name）。娃娃的触摸和语音消息不会经过这些插件，例如消息防抖插件，这样能立刻回复。你自己发的消息不受影响。",
         "default": [
             "astrbot_plugin_continuous_message"
         ]
