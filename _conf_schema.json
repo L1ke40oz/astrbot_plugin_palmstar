@@ -59,6 +59,18 @@
         "hint": "开启后每次上传的录音都会保存到 data/plugin_data/astrbot_plugin_palmstar/voice_debug，方便试听排查识别问题。排查完记得关闭并清理文件。",
         "default": false
     },
+    "tts_provider_id": {
+        "type": "string",
+        "description": "语音合成服务 ID",
+        "hint": "AstrBot「服务提供商」里文字转语音服务的 ID。娃娃会用它把回复说出来；填写后无需开启 AstrBot 全局语音输出，QQ 里仍是文字。留空则使用全局设置的语音合成服务。服务器需要安装 ffmpeg。",
+        "default": ""
+    },
+    "speech_strip_brackets": {
+        "type": "bool",
+        "description": "朗读时跳过括号内容",
+        "hint": "开启后，回复里（笑）、(动作)、*动作* 这类括号内容不会被读出来。",
+        "default": true
+    },
     "bypass_plugins": {
         "type": "list",
         "description": "娃娃消息跳过的插件",

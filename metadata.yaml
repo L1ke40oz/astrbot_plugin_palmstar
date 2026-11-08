@@ -1,7 +1,7 @@
 name: astrbot_plugin_palmstar
 display_name: 掌心星
 desc: 触碰你
-version: v0.3.1
+version: v0.4.0
 author: L1ke40oz
 repo: https://github.com/L1ke40oz/astrbot_plugin_palmstar
 astrbot_version: ">=4.16,<5"

@@ -1,5 +1,7 @@
 import array
+import asyncio
 import hmac
+import re
 import time
 import wave
 from pathlib import Path
@@ -12,6 +14,7 @@ from astrbot.api.message_components import Plain
 from astrbot.api.platform import AstrBotMessage, MessageMember, MessageType
 from astrbot.api.provider import STTProvider
 from astrbot.api.star import Context, Star, StarTools
+from astrbot.core.provider.provider import TTSProvider
 from astrbot.core.star import star_map
 from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 
@@ -21,6 +24,9 @@ face=（她用指尖碰了碰你的脸）"""
 DEFAULT_VOICE_TEMPLATE = "（她握着你的手，对你说）{text}"
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # ~5 minutes of 16 kHz 16-bit mono PCM
+SPEECH_RATE = 16000  # Sample rate of the PCM sent to the ESP32 speaker
+# Stage directions like （笑） or *pats your head* should not be read aloud.
+BRACKET_PATTERN = re.compile(r"（[^）]*）|\([^)]*\)|\*[^*]*\*")
 
 
 class PalmStarPlugin(Star):
@@ -29,7 +35,9 @@ class PalmStarPlugin(Star):
     The ESP32 reports touches (``GET /touch``) and recorded speech
     (``POST /voice``). The plugin turns them into text and injects it into the
     owner's QQ private session as if the owner had sent it, so AstrBot replies
-    through the normal pipeline (persona, memory, conversation context).
+    through the normal pipeline (persona, memory, conversation context). The
+    reply is also synthesized to speech, which the ESP32 fetches from
+    ``GET /speech`` and plays.
     """
 
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -43,6 +51,8 @@ class PalmStarPlugin(Star):
         self.pressure_template = str(config.get("pressure_template", ""))
         self.stt_provider_id = str(config.get("stt_provider_id", "")).strip()
         self.save_voice_debug = bool(config.get("save_voice_debug", False))
+        self.tts_provider_id = str(config.get("tts_provider_id", "")).strip()
+        self.speech_strip_brackets = bool(config.get("speech_strip_brackets", True))
         self.voice_template = (
             str(config.get("voice_template", "")).strip() or DEFAULT_VOICE_TEMPLATE
         )
@@ -62,11 +72,17 @@ class PalmStarPlugin(Star):
         self._self_id = ""
         self._nickname = ""
         self._runner: web.AppRunner | None = None
+        # Injected event id -> future resolved with the reply as 16 kHz PCM
+        # (b"" when there is nothing to play). Filled by speak_reply, consumed
+        # by handle_speech.
+        self._event_seq = 0
+        self._speech: dict[int, asyncio.Future] = {}
 
     async def initialize(self):
         app = web.Application(client_max_size=MAX_UPLOAD_BYTES)
         app.router.add_get("/touch", self.handle_touch)
         app.router.add_post("/voice", self.handle_voice)
+        app.router.add_get("/speech", self.handle_speech)
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
         try:
@@ -160,16 +176,15 @@ class PalmStarPlugin(Star):
         if pressure is not None and self.pressure_template:
             text += self.pressure_template.format(pressure=pressure)
 
-        error = await self._inject(
-            text, {"type": "touch", "part": part, "pressure": pressure}
-        )
+        marker = {"type": "touch", "part": part, "pressure": pressure}
+        error = await self._inject(text, marker)
         if error:
             return web.json_response({"ok": False, "error": error}, status=503)
         self._last_touch[part] = now
         logger.info(
             f"[palmstar] Injected touch part={part} pressure={pressure}: {text}"
         )
-        return web.json_response({"ok": True, "text": text})
+        return web.json_response({"ok": True, "text": text, "id": marker["id"]})
 
     async def handle_voice(self, request: web.Request) -> web.Response:
         """Handle speech recorded by the ESP32 while the hand FSR is pressed.
@@ -268,11 +283,112 @@ class PalmStarPlugin(Star):
             text = self.voice_template.replace("{text}", heard)
         else:
             text = self.voice_template + heard
-        error = await self._inject(text, {"type": "voice", "seconds": seconds})
+        marker = {"type": "voice", "seconds": seconds}
+        error = await self._inject(text, marker)
         if error:
             return web.json_response({"ok": False, "error": error}, status=503)
         logger.info(f"[palmstar] Injected voice ({seconds:.1f}s): {text}")
-        return web.json_response({"ok": True, "text": text})
+        return web.json_response({"ok": True, "text": text, "id": marker["id"]})
+
+    @filter.after_message_sent()
+    async def speak_reply(self, event: AstrMessageEvent):
+        """Turn the bot's reply to a doll event into speech for the ESP32.
+
+        Runs after the reply was sent to QQ, takes its text, synthesizes it with
+        an AstrBot TTS provider and converts it to 16 kHz mono PCM with ffmpeg.
+        The result resolves the future /speech is waiting on.
+
+        Args:
+            event: The event whose reply was just sent.
+        """
+        marker = event.get_extra("palmstar")
+        future = self._speech.get(marker.get("id")) if marker else None
+        if future is None or future.done():
+            return
+
+        result = event.get_result()
+        text = "".join(
+            c.text for c in (result.chain if result else []) if isinstance(c, Plain)
+        )
+        if self.speech_strip_brackets:
+            text = BRACKET_PATTERN.sub("", text)
+        text = text.strip()
+
+        # A configured provider id lets the doll speak without turning on
+        # AstrBot's global TTS switch, so QQ replies stay text.
+        if self.tts_provider_id:
+            provider = self.context.get_provider_by_id(self.tts_provider_id)
+        else:
+            provider = self.context.get_using_tts_provider()
+        pcm = b""
+        if not text:
+            logger.info("[palmstar] Reply has no speakable text")
+        elif not isinstance(provider, TTSProvider):
+            logger.warning(
+                f"[palmstar] TTS provider not available (id={self.tts_provider_id!r})"
+            )
+        else:
+            try:
+                audio_path = await provider.get_audio(text)
+                proc = await asyncio.create_subprocess_exec(
+                    "ffmpeg", "-v", "error", "-i", str(audio_path),
+                    "-ac", "1", "-ar", str(SPEECH_RATE), "-f", "s16le", "-",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )  # fmt: skip
+                pcm, err = await proc.communicate()
+                if proc.returncode != 0:
+                    raise RuntimeError(err.decode(errors="ignore").strip()[-300:])
+                logger.info(
+                    f"[palmstar] Speech ready ({len(pcm) / (SPEECH_RATE * 2):.1f}s): "
+                    f"{text}"
+                )
+            except Exception as e:
+                logger.error(f"[palmstar] Text-to-speech failed: {e}")
+                pcm = b""
+        if not future.done():
+            future.set_result(pcm)
+
+    async def handle_speech(self, request: web.Request) -> web.Response:
+        """Let the ESP32 wait for and download the spoken reply to an event.
+
+        Query args:
+            id: Event id returned by /touch or /voice.
+            token: Shared secret, must match the configured token if set.
+            wait: Seconds to wait for the reply, default 60, max 120.
+
+        Returns:
+            200 with raw 16 kHz 16-bit mono PCM, 204 if there is nothing to play
+            (no reply, no TTS, timeout), 400 bad args, 403 bad token,
+            404 unknown or already fetched id.
+        """
+        q = request.query
+        if self.token and not hmac.compare_digest(
+            q.get("token", "").encode(), self.token.encode()
+        ):
+            return web.json_response({"ok": False, "error": "bad token"}, status=403)
+        try:
+            event_id = int(q["id"])
+            wait = min(float(q.get("wait", 60)), 120)
+        except (KeyError, ValueError):
+            return web.json_response(
+                {"ok": False, "error": "id and wait must be numbers"}, status=400
+            )
+        future = self._speech.get(event_id)
+        if future is None:
+            return web.json_response({"ok": False, "error": "unknown id"}, status=404)
+        try:
+            pcm = await asyncio.wait_for(asyncio.shield(future), wait)
+        except asyncio.TimeoutError:
+            return web.Response(status=204)
+        self._speech.pop(event_id, None)
+        if not pcm:
+            return web.Response(status=204)
+        return web.Response(
+            body=pcm,
+            content_type="application/octet-stream",
+            headers={"X-Sample-Rate": str(SPEECH_RATE)},
+        )
 
     async def _inject(self, text: str, marker: dict) -> str | None:
         """Inject text into the owner's QQ private chat as if the owner sent it.
@@ -280,7 +396,8 @@ class PalmStarPlugin(Star):
         Args:
             text: Message text the bot will see.
             marker: Stored as event extra "palmstar" so hooks can recognize doll
-                events (bypass_plugins, and later the reply-to-speech stage).
+                events. On success an "id" key is added; the ESP32 passes it to
+                /speech to fetch the spoken reply.
 
         Returns:
             None on success, otherwise a short error string.
@@ -326,6 +443,12 @@ class PalmStarPlugin(Star):
         abm.message = [Plain(text)]
         abm.message_str = text
         abm.raw_message = None  # No OneBot event; sending falls back to session id.
+
+        self._event_seq += 1
+        marker["id"] = self._event_seq
+        self._speech[marker["id"]] = asyncio.get_running_loop().create_future()
+        while len(self._speech) > 20:  # Drop replies the ESP32 never fetched
+            self._speech.pop(next(iter(self._speech)))
 
         event = platform.create_event(abm)
         event.set_extra("palmstar", marker)
