@@ -27,8 +27,12 @@ MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # ~5 minutes of 16 kHz 16-bit mono PCM
 SPEECH_RATE = 16000  # Sample rate of the PCM sent to the ESP32 speaker
 # Stage directions like （笑） or *pats your head* should not be read aloud.
 BRACKET_PATTERN = re.compile(r"（[^）]*）|\([^)]*\)|\*[^*]*\*")
-# One sentence: text up to and including its end punctuation.
+# One sentence: text up to and including its end punctuation. Used when
+# AstrBot's segmented reply is off.
 SENTENCE_PATTERN = re.compile(r"[^。！？!?…~～\n]+[。！？!?…~～]*")
+# Split words kept at the end of a spoken sentence because they shape its
+# intonation; other split words (e.g. $) are removed.
+SPOKEN_PUNCTUATION = set("。？！!?~～…，,")
 
 
 class PalmStarPlugin(Star):
@@ -55,6 +59,7 @@ class PalmStarPlugin(Star):
         self.save_voice_debug = bool(config.get("save_voice_debug", False))
         self.tts_provider_id = str(config.get("tts_provider_id", "")).strip()
         self.speech_strip_brackets = bool(config.get("speech_strip_brackets", True))
+        self.speech_by_sentence = bool(config.get("speech_by_sentence", False))
         self.voice_template = (
             str(config.get("voice_template", "")).strip() or DEFAULT_VOICE_TEMPLATE
         )
@@ -301,10 +306,11 @@ class PalmStarPlugin(Star):
 
         Runs as soon as the reply text is ready, before it is sent to QQ (low
         priority so other plugins finish editing the text first). Synthesis
-        runs in the background so QQ sending is not delayed: each sentence is
-        synthesized with an AstrBot TTS provider, converted to 16 kHz mono PCM
-        with ffmpeg and published for /speech, so playback starts after the
-        first sentence instead of the whole reply.
+        runs in the background so QQ sending is not delayed. The reply is
+        synthesized with an AstrBot TTS provider in one piece, or sentence by
+        sentence when speech_by_sentence is on (playback then starts after the
+        first sentence), converted to 16 kHz mono PCM with ffmpeg and published
+        for /speech.
 
         Args:
             event: The event whose reply is about to be sent.
@@ -321,7 +327,57 @@ class PalmStarPlugin(Star):
         )
         if self.speech_strip_brackets:
             text = BRACKET_PATTERN.sub("", text)
-        sentences = [x.strip() for x in SENTENCE_PATTERN.findall(text) if x.strip()]
+
+        # Split like AstrBot's segmented reply does for QQ, so the doll speaks
+        # the same pieces and custom separators such as $ are never read aloud.
+        seg_cfg = (
+            self.context.get_config(umo=event.unified_msg_origin)
+            .get("platform_settings", {})
+            .get("segmented_reply", {})
+        )
+        pieces = SENTENCE_PATTERN.findall(text)
+        if seg_cfg.get("enable"):
+            try:
+                if seg_cfg.get("split_mode") == "words":
+                    words = sorted(
+                        seg_cfg.get("split_words") or [], key=len, reverse=True
+                    )
+                    pieces = [text]
+                    if words:
+                        alternatives = "|".join(re.escape(w) for w in words)
+                        pieces = []
+                        for piece in re.findall(
+                            f"(.*?(?:{alternatives})|.+$)", text, re.DOTALL
+                        ):
+                            for w in words:
+                                if piece.endswith(w) and w not in SPOKEN_PUNCTUATION:
+                                    piece = piece[: -len(w)]
+                                    break
+                            pieces.append(piece)
+                else:
+                    pieces = re.findall(
+                        seg_cfg.get("regex") or r".*?[。？！~…]+|.+$",
+                        text,
+                        re.DOTALL | re.MULTILINE,
+                    )
+                if seg_cfg.get("content_cleanup_rule"):
+                    pieces = [
+                        re.sub(seg_cfg["content_cleanup_rule"], "", x) for x in pieces
+                    ]
+            except re.error as e:
+                logger.warning(f"[palmstar] Segmented reply rule unusable: {e}")
+                pieces = SENTENCE_PATTERN.findall(text)
+        # Pieces made only of punctuation (e.g. a lone "……") have nothing to say.
+        sentences = [x.strip() for x in pieces if re.search(r"\w", x)]
+        if sentences and not self.speech_by_sentence:
+            # One TTS call for the whole reply keeps the intonation natural.
+            # Pieces without end punctuation get a comma, so the separators
+            # become short pauses.
+            sentences = [
+                "".join(
+                    x if x[-1] in SPOKEN_PUNCTUATION else x + "，" for x in sentences
+                ).rstrip("，")
+            ]
 
         # A configured provider id lets the doll speak without turning on
         # AstrBot's global TTS switch, so QQ replies stay text.

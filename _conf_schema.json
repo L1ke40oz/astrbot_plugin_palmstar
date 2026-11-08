@@ -71,6 +71,12 @@
         "hint": "开启后，回复里（笑）、(动作)、*动作* 这类括号内容不会被读出来。",
         "default": true
     },
+    "speech_by_sentence": {
+        "type": "bool",
+        "description": "逐句合成语音",
+        "hint": "关闭（默认）时整段回复一次合成，语调更连贯；开启后按分段一句一句合成，第一句好了就开始播放，回复长、语音合成慢时开口更快。",
+        "default": false
+    },
     "bypass_plugins": {
         "type": "list",
         "description": "娃娃消息跳过的插件",
