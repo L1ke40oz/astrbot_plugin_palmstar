@@ -1,3 +1,4 @@
+import array
 import hmac
 import time
 import wave
@@ -10,7 +11,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import Plain
 from astrbot.api.platform import AstrBotMessage, MessageMember, MessageType
 from astrbot.api.provider import STTProvider
-from astrbot.api.star import Context, Star
+from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.star import star_map
 from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 
@@ -41,6 +42,7 @@ class PalmStarPlugin(Star):
         self.cooldown = float(config.get("cooldown_seconds", 10))
         self.pressure_template = str(config.get("pressure_template", ""))
         self.stt_provider_id = str(config.get("stt_provider_id", "")).strip()
+        self.save_voice_debug = bool(config.get("save_voice_debug", False))
         self.voice_template = (
             str(config.get("voice_template", "")).strip() or DEFAULT_VOICE_TEMPLATE
         )
@@ -201,6 +203,15 @@ class PalmStarPlugin(Star):
             )
         pcm = await request.read()
         seconds = len(pcm) / (rate * 2)
+        # Level stats make mic problems visible in the log: peak near 32767 with
+        # a high clipped share means distortion, a tiny peak means near silence.
+        samples = array.array("h", pcm[: len(pcm) // 2 * 2])
+        peak = max(map(abs, samples), default=0)
+        clipped = sum(1 for s in samples if abs(s) >= 32000) / max(len(samples), 1)
+        logger.info(
+            f"[palmstar] Voice upload {seconds:.1f}s rate={rate} "
+            f"peak={peak} clipped={clipped:.1%}"
+        )
         if seconds < 0.3:
             return web.json_response(
                 {"ok": False, "error": "audio too short"}, status=400
@@ -220,10 +231,14 @@ class PalmStarPlugin(Star):
                 {"ok": False, "error": "stt provider not ready"}, status=503
             )
 
-        wav_path = (
-            Path(get_astrbot_temp_path())
-            / f"palmstar_voice_{int(time.time() * 1000)}.wav"
+        # Debug mode keeps every upload in the plugin data dir so it can be
+        # listened to; otherwise the WAV is a temp file deleted after use.
+        wav_dir = (
+            StarTools.get_data_dir("astrbot_plugin_palmstar") / "voice_debug"
+            if self.save_voice_debug
+            else Path(get_astrbot_temp_path())
         )
+        wav_path = wav_dir / f"palmstar_voice_{int(time.time() * 1000)}.wav"
         wav_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             with wave.open(str(wav_path), "wb") as wav:
@@ -238,7 +253,10 @@ class PalmStarPlugin(Star):
                 {"ok": False, "error": "transcription failed"}, status=502
             )
         finally:
-            wav_path.unlink(missing_ok=True)
+            if self.save_voice_debug:
+                logger.info(f"[palmstar] Saved voice upload to {wav_path}")
+            else:
+                wav_path.unlink(missing_ok=True)
 
         if not heard:
             logger.info(f"[palmstar] No speech recognized in {seconds:.1f}s audio")

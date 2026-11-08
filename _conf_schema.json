@@ -53,6 +53,12 @@
         "hint": "按住手心说话识别出的文字会填进 {text}，再注入 QQ。",
         "default": "（她握着你的手，对你说）{text}"
     },
+    "save_voice_debug": {
+        "type": "bool",
+        "description": "保存语音录音（调试用）",
+        "hint": "开启后每次上传的录音都会保存到 data/plugin_data/astrbot_plugin_palmstar/voice_debug，方便试听排查识别问题。排查完记得关闭并清理文件。",
+        "default": false
+    },
     "bypass_plugins": {
         "type": "list",
         "description": "娃娃消息跳过的插件",
