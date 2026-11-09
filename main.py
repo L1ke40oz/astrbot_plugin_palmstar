@@ -19,9 +19,9 @@ from astrbot.core.provider.provider import TTSProvider
 from astrbot.core.star import star_map
 from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 
-DEFAULT_PART_DESCRIPTIONS = """head=（她轻轻摸了摸你的头）
+DEFAULT_PART_DESCRIPTIONS = """neck=（她轻轻摸了摸你的脖子）
 hand=（她牵起了你的手）
-face=（她用指尖碰了碰你的脸）
+chest=（她戳了戳你的胸口）
 belly=（她戳了戳你的肚子）
 back=（她轻轻拍了拍你的背）"""
 DEFAULT_VOICE_TEMPLATE = "（她握着你的手，对你说）{text}"
@@ -54,28 +54,49 @@ class PalmStarPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
-        self.port = int(config.get("port", 8765))
-        self.token = str(config.get("token", "")).strip()
-        self.target_qq = str(config.get("target_qq", "")).strip()
-        self.platform_id = str(config.get("platform_id", "")).strip()
-        self.cooldown = float(config.get("cooldown_seconds", 10))
-        self.touch_realtime = bool(config.get("touch_realtime", False))
-        self.pressure_template = str(config.get("pressure_template", ""))
-        self.stt_provider_id = str(config.get("stt_provider_id", "")).strip()
-        self.save_voice_debug = bool(config.get("save_voice_debug", False))
-        self.tts_provider_id = str(config.get("tts_provider_id", "")).strip()
-        self.speech_strip_brackets = bool(config.get("speech_strip_brackets", True))
-        self.speech_by_sentence = bool(config.get("speech_by_sentence", False))
-        self.voice_template = (
-            str(config.get("voice_template", "")).strip() or DEFAULT_VOICE_TEMPLATE
-        )
-        self.bypass_plugins = {
-            str(name).strip() for name in config.get("bypass_plugins", []) if name
-        }
+        server = config.get("server") or {}
+        chat = config.get("chat") or {}
+        touch = config.get("touch") or {}
+        voice = config.get("voice") or {}
+        speech = config.get("speech") or {}
 
-        # "head=（她轻轻摸了摸你的头）" per line -> {"head": "（她轻轻摸了摸你的头）"}
+        self.port = int(server.get("port", 8765))
+        self.token = str(server.get("token", "")).strip()
+        self.target_qq = str(chat.get("target_qq", "")).strip()
+        if not self.target_qq:
+            # Fall back to the AstrBot admin when exactly one admin is a QQ number.
+            admins = [
+                str(a).strip()
+                for a in context.get_config().get("admins_id", [])
+                if str(a).strip().isdigit()
+            ]
+            if len(admins) == 1:
+                self.target_qq = admins[0]
+                logger.info(f"[palmstar] Using AstrBot admin {admins[0]} as target QQ")
+            else:
+                logger.warning(
+                    "[palmstar] Target QQ not set and AstrBot has "
+                    f"{len(admins)} QQ admins; fill in chat.target_qq"
+                )
+        self.platform_id = str(chat.get("platform_id", "")).strip()
+        self.bypass_plugins = {
+            str(name).strip() for name in chat.get("bypass_plugins", []) if name
+        }
+        self.touch_realtime = bool(touch.get("realtime", False))
+        self.cooldown = float(touch.get("cooldown_seconds", 10))
+        self.pressure_template = str(touch.get("pressure_template", ""))
+        self.stt_provider_id = str(voice.get("stt_provider_id", "")).strip()
+        self.voice_template = (
+            str(voice.get("template", "")).strip() or DEFAULT_VOICE_TEMPLATE
+        )
+        self.save_voice_debug = bool(voice.get("save_debug", False))
+        self.tts_provider_id = str(speech.get("tts_provider_id", "")).strip()
+        self.speech_strip_brackets = bool(speech.get("strip_brackets", True))
+        self.speech_by_sentence = bool(speech.get("by_sentence", False))
+
+        # "neck=（她轻轻摸了摸你的脖子）" per line -> {"neck": "（她轻轻摸了摸你的脖子）"}
         self.part_descriptions: dict[str, str] = {}
-        raw = config.get("part_descriptions") or DEFAULT_PART_DESCRIPTIONS
+        raw = touch.get("part_descriptions") or DEFAULT_PART_DESCRIPTIONS
         for line in str(raw).splitlines():
             key, sep, text = line.partition("=")
             if sep and key.strip() and text.strip():

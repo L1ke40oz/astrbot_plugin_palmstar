@@ -1,94 +1,131 @@
 {
-    "port": {
-        "type": "int",
-        "description": "HTTP 监听端口",
-        "hint": "ESP32 请求 http://服务器IP:端口/touch。修改后插件重载即生效，需要放行端口。",
-        "default": 8765
+    "server": {
+        "description": "连接设置",
+        "type": "object",
+        "hint": "ESP32 连接插件用的 HTTP 服务。",
+        "items": {
+            "port": {
+                "type": "int",
+                "description": "HTTP 监听端口",
+                "hint": "ESP32 请求 http://服务器IP:端口/touch。修改后插件重载即生效，需要放行端口。",
+                "default": 8765
+            },
+            "token": {
+                "type": "string",
+                "description": "校验 token",
+                "hint": "ESP32 请求需带 &token=这里的值。留空则不校验（不建议）。",
+                "default": ""
+            }
+        }
     },
-    "token": {
-        "type": "string",
-        "description": "校验 token",
-        "hint": "ESP32 请求需带 &token=这里的值。留空则不校验（不建议）。",
-        "default": ""
+    "chat": {
+        "description": "QQ 会话",
+        "type": "object",
+        "hint": "娃娃的消息发到哪个 QQ 私聊。",
+        "items": {
+            "target_qq": {
+                "type": "string",
+                "description": "你的 QQ 号",
+                "hint": "留空时，如果 AstrBot 管理员 ID 里只有一个 QQ 号，就自动用它。有多个管理员或没设置管理员时需要手动填写。",
+                "default": ""
+            },
+            "platform_id": {
+                "type": "string",
+                "description": "平台适配器 ID",
+                "hint": "留空自动使用第一个 aiocqhttp(OneBot) 适配器。只有接了多个 QQ 适配器时才需要填写。",
+                "default": ""
+            },
+            "bypass_plugins": {
+                "type": "list",
+                "description": "娃娃消息跳过的插件",
+                "hint": "填插件名（metadata 里的 name）。娃娃的触摸和语音消息不会经过这些插件，例如消息防抖插件，这样能立刻回复。你自己发的消息不受影响。",
+                "default": [
+                    "astrbot_plugin_continuous_message"
+                ]
+            }
+        }
     },
-    "target_qq": {
-        "type": "string",
-        "description": "你的 QQ 号",
-        "hint": "触摸事件会伪装成这个 QQ 发来的私聊消息，bot 的回复也发到这里。",
-        "default": ""
+    "touch": {
+        "description": "触摸",
+        "type": "object",
+        "hint": "触摸事件的处理方式和描述。",
+        "items": {
+            "realtime": {
+                "type": "bool",
+                "description": "触摸实时对话",
+                "hint": "关闭（默认）：触摸时娃娃播放本地录音，触摸记录先存着，等你下一次发消息、按住手心说话或触发主动消息时一起带给 bot。开启：触摸后立即让 bot 回复并用语音说出来，娃娃不播放本地录音。",
+                "default": false
+            },
+            "cooldown_seconds": {
+                "type": "float",
+                "description": "同部位冷却时间（秒）",
+                "hint": "同一部位在冷却期内再次触摸：实时对话模式下会被忽略（返回 429）；本地录音模式下照常播放录音，但不会重复记录。不同部位互不影响。",
+                "default": 10
+            },
+            "part_descriptions": {
+                "type": "text",
+                "description": "部位 → 事件描述",
+                "hint": "每行一条：部位=描述。部位即 ESP32 发送的 part 参数（不区分大小写）。未列出的部位会被拒绝（返回 400）。",
+                "default": "neck=（她轻轻摸了摸你的脖子）\nhand=（她牵起了你的手）\nchest=（她戳了戳你的胸口）\nbelly=（她戳了戳你的肚子）\nback=（她轻轻拍了拍你的背）"
+            },
+            "pressure_template": {
+                "type": "string",
+                "description": "压力值附加描述",
+                "hint": "请求带 pressure(0-100) 时追加到事件描述后，{pressure} 会被替换为数值。留空则不追加。",
+                "default": "（力度约 {pressure}/100）"
+            }
+        }
     },
-    "platform_id": {
-        "type": "string",
-        "description": "平台适配器 ID",
-        "hint": "留空自动使用第一个 aiocqhttp(OneBot) 适配器。有多个 QQ 适配器时填写对应 ID。",
-        "default": ""
+    "voice": {
+        "description": "语音输入",
+        "type": "object",
+        "hint": "按住手心说话：录音转成文字后发给 bot。",
+        "items": {
+            "stt_provider_id": {
+                "type": "string",
+                "description": "语音识别服务",
+                "hint": "选择 AstrBot 里的语音转文字服务，无需开启全局语音识别。留空则使用全局设置的语音识别服务。",
+                "_special": "select_provider_stt",
+                "default": ""
+            },
+            "template": {
+                "type": "string",
+                "description": "语音消息模板",
+                "hint": "识别出的文字会填进 {text}，再发给 bot。",
+                "default": "（她握着你的手，对你说）{text}"
+            },
+            "save_debug": {
+                "type": "bool",
+                "description": "保存语音录音（调试用）",
+                "hint": "开启后每次上传的录音都会保存到 data/plugin_data/astrbot_plugin_palmstar/voice_debug，方便试听排查识别问题。排查完记得关闭并清理文件。",
+                "default": false
+            }
+        }
     },
-    "touch_realtime": {
-        "type": "bool",
-        "description": "触摸实时对话",
-        "hint": "关闭（默认）：触摸时娃娃播放本地录音，触摸记录先存着，等你下一次发消息、按住手心说话或触发主动消息时一起带给 bot。开启：触摸后立即让 bot 回复并用语音说出来，娃娃不播放本地录音。",
-        "default": false
-    },
-    "cooldown_seconds": {
-        "type": "float",
-        "description": "同部位冷却时间（秒）",
-        "hint": "同一部位在冷却期内再次触摸：实时对话模式下会被忽略（返回 429）；本地录音模式下照常播放录音，但不会重复记录。不同部位互不影响。",
-        "default": 10
-    },
-    "part_descriptions": {
-        "type": "text",
-        "description": "部位 → 事件描述",
-        "hint": "每行一条：部位=描述。部位即 ESP32 发送的 part 参数（不区分大小写）。未列出的部位会被拒绝（返回 400）。",
-        "default": "head=（她轻轻摸了摸你的头）\nhand=（她牵起了你的手）\nface=（她用指尖碰了碰你的脸）\nbelly=（她戳了戳你的肚子）\nback=（她轻轻拍了拍你的背）"
-    },
-    "pressure_template": {
-        "type": "string",
-        "description": "压力值附加描述",
-        "hint": "请求带 pressure(0-100) 时追加到事件描述后，{pressure} 会被替换为数值。留空则不追加。",
-        "default": "（力度约 {pressure}/100）"
-    },
-    "stt_provider_id": {
-        "type": "string",
-        "description": "语音识别服务 ID",
-        "hint": "AstrBot「服务提供商」里语音转文字服务的 ID。填写后无需开启 AstrBot 全局语音识别；留空则使用全局设置的语音识别服务。",
-        "default": ""
-    },
-    "voice_template": {
-        "type": "string",
-        "description": "语音消息模板",
-        "hint": "按住手心说话识别出的文字会填进 {text}，再注入 QQ。",
-        "default": "（她握着你的手，对你说）{text}"
-    },
-    "save_voice_debug": {
-        "type": "bool",
-        "description": "保存语音录音（调试用）",
-        "hint": "开启后每次上传的录音都会保存到 data/plugin_data/astrbot_plugin_palmstar/voice_debug，方便试听排查识别问题。排查完记得关闭并清理文件。",
-        "default": false
-    },
-    "tts_provider_id": {
-        "type": "string",
-        "description": "语音合成服务 ID",
-        "hint": "AstrBot「服务提供商」里文字转语音服务的 ID。娃娃会用它把回复说出来；填写后无需开启 AstrBot 全局语音输出，QQ 里仍是文字。留空则使用全局设置的语音合成服务。服务器需要安装 ffmpeg。",
-        "default": ""
-    },
-    "speech_strip_brackets": {
-        "type": "bool",
-        "description": "朗读时跳过括号内容",
-        "hint": "开启后，回复里（笑）、(动作)、*动作* 这类括号内容不会被读出来。",
-        "default": true
-    },
-    "speech_by_sentence": {
-        "type": "bool",
-        "description": "逐句合成语音",
-        "hint": "关闭（默认）时整段回复一次合成，语调更连贯；开启后按分段一句一句合成，第一句好了就开始播放，回复长、语音合成慢时开口更快。",
-        "default": false
-    },
-    "bypass_plugins": {
-        "type": "list",
-        "description": "娃娃消息跳过的插件",
-        "hint": "填插件名（metadata 里的 name）。娃娃的触摸和语音消息不会经过这些插件，例如消息防抖插件，这样能立刻回复。你自己发的消息不受影响。",
-        "default": [
-            "astrbot_plugin_continuous_message"
-        ]
+    "speech": {
+        "description": "语音回复",
+        "type": "object",
+        "hint": "bot 的回复用语音从娃娃身上说出来。服务器需要安装 ffmpeg。",
+        "items": {
+            "tts_provider_id": {
+                "type": "string",
+                "description": "语音合成服务",
+                "hint": "选择 AstrBot 里的文字转语音服务，无需开启全局语音输出，QQ 里仍是文字。留空则使用全局设置的语音合成服务。",
+                "_special": "select_provider_tts",
+                "default": ""
+            },
+            "strip_brackets": {
+                "type": "bool",
+                "description": "朗读时跳过括号内容",
+                "hint": "开启后，回复里（笑）、(动作)、*动作* 这类括号内容不会被读出来。",
+                "default": true
+            },
+            "by_sentence": {
+                "type": "bool",
+                "description": "逐句合成语音",
+                "hint": "关闭（默认）时整段回复一次合成，语调更连贯；开启后按分段一句一句合成，第一句好了就开始播放，回复长、语音合成慢时开口更快。",
+                "default": false
+            }
+        }
     }
 }
