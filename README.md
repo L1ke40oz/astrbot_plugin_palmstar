@@ -55,6 +55,27 @@ GET http://服务器IP:8765/speech?id=事件ID&seq=句子序号&token=你的toke
   - **语音合成服务**：从下拉框选择 AstrBot 里的文字转语音服务。不需要开启全局语音输出，QQ 里仍是文字。
   - **朗读时跳过括号内容**、**逐句合成语音**。
 
+## 本地录音（sounds.bin）
+
+触摸时播放的本地录音打包在 `sounds.bin` 里，用 `tools/make_sounds.py` 生成（需要 Python 和 numpy：`pip install numpy`）。录音必须是 WAV，MP3/M4A 先用 Audacity 等软件导出成 WAV。
+
+1. **切分（可选）**：每个部位录一整段，句子之间停顿 1 秒以上，文件名用部位名（如 `neck.wav`），然后：
+   ```bash
+   python tools/make_sounds.py split 录音文件夹 切分文件夹
+   ```
+   会按停顿切成一句一句，放进 `切分文件夹/部位名/`。逐句试听，删掉不要的，需要合并的自己拼起来。也可以跳过这步，直接用 Audacity 剪好每一句。
+2. **打包**：每个部位一个文件夹（文件夹名 = ESP32 程序里的部位名，1~8 个英文字母或数字），里面放这个部位的每一句 WAV：
+   ```bash
+   python tools/make_sounds.py pack 切分文件夹 sounds.bin
+   ```
+3. **烧录**：Arduino 分区方案选 16M Flash (3MB APP/9.9MB FATFS)，上传程序后关掉串口监视器，用 esptool 把 `sounds.bin` 写到 `0x610000`：
+   ```bash
+   esptool --chip esp32s3 --port COM7 --baud 921600 write-flash 0x610000 sounds.bin
+   ```
+   esptool 在 Arduino 的 esp32 开发板包里（`Arduino15/packages/esp32/tools/esptool_py/版本号/`）。
+
+录音请只自己使用，不要把 `sounds.bin` 或录音文件传到公开仓库。
+
 ## 注意
 
 - 仅支持 aiocqhttp(OneBot v11) 适配器的私聊。
